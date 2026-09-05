@@ -242,7 +242,10 @@ export default function DataHubView({ token, onConsolidationCompleted, onNavigat
   };
 
   const handleConnectGmail = () => {
-    window.location.href = 'http://127.0.0.1:8000/api/integrations/gmail/connect';
+    const API_BASE_URL =
+      import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+
+    window.location.href = `${API_BASE_URL}/api/integrations/gmail/connect`;
   };
 
   const handleSyncGmail = async () => {
