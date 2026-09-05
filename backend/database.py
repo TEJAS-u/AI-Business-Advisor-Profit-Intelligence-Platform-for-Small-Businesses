@@ -13,6 +13,7 @@ DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai_cfo.db")
 
 
 def get_db():
+    conn = sqlite3.connect(DB_PATH)
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
     try:

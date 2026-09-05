@@ -17,13 +17,10 @@ from typing import Dict, Any, List, Optional
 from analytics_engine import sanitize_for_json
 from database import get_db
 
-GROQ_API_KEY = os.environ.get(
-   
-
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_PRIMARY_MODEL = "openai/gpt-oss-120b"
-GROQ_FALLBACK_MODEL = "openai/gpt-oss-20b"
+GROQ_PRIMARY_MODEL = os.getenv("GROQ_PRIMARY_MODEL", "llama-3.3-70b-versatile")
+GROQ_FALLBACK_MODEL = os.getenv("GROQ_FALLBACK_MODEL", "llama-3.1-8b-instant")
 
 
 class UserAIAdvisor:
