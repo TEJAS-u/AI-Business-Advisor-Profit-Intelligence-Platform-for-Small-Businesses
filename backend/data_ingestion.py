@@ -282,42 +282,79 @@ class DataIngestionService:
         lines = [line.strip()
                  for line in full_text.split('\n') if line.strip()]
 
+        # Extract document-level key-value pairs (Invoice Number, Date, Customer, Vendor, Cost, etc.)
+        doc_kv = {}
+        for line in lines:
+            m = re.match(r'^([A-Za-z0-9\s_\-]{2,30})\s*[:=]\s*(.+)$', line)
+            if m:
+                k = m.group(1).strip().lower().replace(' ', '_')
+                v = m.group(2).strip()
+                doc_kv[k] = v
+
+        invoice_num = doc_kv.get('invoice_number') or doc_kv.get('invoice_num') or doc_kv.get('invoice') or doc_kv.get('bill_no')
+        cust_name = doc_kv.get('customer_name') or doc_kv.get('customer') or doc_kv.get('client') or doc_kv.get('party')
+        supp_name = doc_kv.get('supplier_name') or doc_kv.get('supplier') or doc_kv.get('vendor') or doc_kv.get('vendor_name')
+        date_str = doc_kv.get('date') or doc_kv.get('invoice_date') or doc_kv.get('payment_date')
+        cost_val = doc_kv.get('purchase_cost') or doc_kv.get('unit_cost') or doc_kv.get('cost')
+
         records = []
         for idx, line in enumerate(lines):
             # Regex patterns for tabular invoice rows: Product/desc + Qty + Price + Total
             match = re.search(r'([A-Za-z0-9\s\-\.\/]+?)\s+(\d+)\s+(?:₹|INR|Rs\.?|\$)?\s*([\d\.\,]+)\s+(?:₹|INR|Rs\.?|\$)?\s*([\d\.\,]+)', line)
             if match:
                 pname, qty, price, total = match.groups()
-                records.append({
+                rec = {
                     "product_name": pname.strip(),
                     "quantity": float(qty),
                     "selling_price": float(price.replace(',', '')),
                     "total_amount": float(total.replace(',', '')),
                     "source_file": filename,
                     "_row_index": idx + 1
-                })
+                }
+                if invoice_num: rec["invoice_num"] = invoice_num
+                if cust_name: rec["customer_name"] = cust_name
+                if supp_name: rec["supplier_name"] = supp_name
+                if date_str: rec["date"] = date_str
+                if cost_val:
+                    try:
+                        rec["unit_cost"] = float(re.search(r'[\d\.\,]+', cost_val).group(0).replace(',', ''))
+                    except Exception:
+                        pass
+                records.append(rec)
             else:
                 # Regex for Expense/Invoice total line: Category/Party + Date + Amount
                 match_exp = re.search(r'(Rent|Electricity|Salary|Shipping|Transport|Vendor|Supplier|Bill|Invoice|GST)\w*\s+.*?(\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4})?.*?(?:₹|INR|Rs\.?|\$)?\s*([\d\.\,]{3,})', line, re.IGNORECASE)
                 if match_exp:
                     cat, dt, amt = match_exp.groups()
-                    records.append({
+                    rec = {
                         "category": cat.strip().title(),
                         "amount": float(amt.replace(',', '')),
-                        "expense_date": dt if dt else "",
+                        "expense_date": dt if dt else (date_str or ""),
                         "description": line,
                         "source_file": filename,
                         "_row_index": idx + 1
-                    })
+                    }
+                    if supp_name: rec["supplier_name"] = supp_name
+                    if invoice_num: rec["invoice_num"] = invoice_num
+                    records.append(rec)
 
         domain = "INVOICE" if any("invoice" in r for r in records) else "SALES" if records else "UNKNOWN"
+        # Fallback if no tabular/line records matched: try text key-value parsing
+        if not records and full_text.strip():
+            txt_recs, txt_dom, txt_meta = self._parse_text(filename, full_text.encode('utf-8'))
+            if txt_recs:
+                return txt_recs, txt_dom, {"filename": filename, "file_type": "PDF", "file_size": len(content), "record_count": len(txt_recs), "detected_domain": txt_dom, "columns": list(txt_recs[0].keys())}
+
+        domain = "INVOICE" if (invoice_num or any("invoice" in str(r).lower() for r in records)) else "SALES" if records else "UNKNOWN"
+        cols = list(set([k for r in records for k in r.keys() if not k.startswith("_")])) if records else ["product_name", "quantity", "selling_price", "total_amount"]
+
         metadata = {
             "filename": filename,
             "file_type": "PDF",
             "file_size": len(content),
             "record_count": len(records),
             "detected_domain": domain,
-            "columns": ["product_name", "quantity", "selling_price", "total_amount"]
+            "columns": cols
         }
         return records, domain, metadata
 

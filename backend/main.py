@@ -264,6 +264,252 @@ def get_consolidation_status(user: Dict[str, Any] = Depends(get_current_user_dep
     }
 
 
+@app.get("/api/consolidation/files/{file_id}/source-data")
+def get_file_source_data(file_id: int, user: Dict[str, Any] = Depends(get_current_user_dep)):
+    """
+    Returns extracted source data, field extraction status, raw vs normalized comparison,
+    and provenance information for a specific uploaded file.
+    """
+    conn = get_db()
+    file_row = conn.execute(
+        "SELECT * FROM uploaded_files WHERE id = ? AND user_id = ?", (file_id, user["id"])).fetchone()
+    if not file_row:
+        conn.close()
+        raise HTTPException(status_code=404, detail="Uploaded file not found.")
+
+    file_info = dict(file_row)
+
+    raw_rows = conn.execute(
+        "SELECT * FROM raw_records WHERE (file_id = ? OR source_file = ?) AND user_id = ? ORDER BY row_index ASC",
+        (file_id, filename, user["id"])
+    ).fetchall()
+
+    filename = file_info["filename"]
+    unified_sales = [dict(r) for r in conn.execute(
+        "SELECT * FROM unified_sales WHERE user_id = ? AND source_file = ?", (user["id"], filename)).fetchall()]
+    unified_expenses = [dict(r) for r in conn.execute(
+        "SELECT * FROM unified_expenses WHERE user_id = ? AND source_file = ?", (user["id"], filename)).fetchall()]
+    unified_invoices = [dict(r) for r in conn.execute(
+        "SELECT * FROM unified_invoices WHERE user_id = ? AND source_file = ?", (user["id"], filename)).fetchall()]
+    unified_inventory = [dict(r) for r in conn.execute(
+        "SELECT * FROM unified_inventory WHERE user_id = ? AND source_file = ?", (user["id"], filename)).fetchall()]
+    conn.close()
+
+    normalized_map = {}
+    for r in unified_sales:
+        normalized_map[r["source_row"]] = {"domain": "SALES", "data": r}
+    for r in unified_expenses:
+        normalized_map[r["source_row"]] = {"domain": "EXPENSES", "data": r}
+    for r in unified_invoices:
+        normalized_map[r["source_row"]] = {"domain": "INVOICE", "data": r}
+    for r in unified_inventory:
+        normalized_map[r["source_row"]] = {"domain": "INVENTORY", "data": r}
+
+    extracted_records = []
+    columns_set = set()
+
+    for row in raw_rows:
+        r_dict = dict(row)
+        try:
+            payload = json.loads(r_dict.get("raw_payload_json") or "{}")
+        except Exception:
+            payload = {}
+
+        row_idx = r_dict.get("row_index", 1)
+        norm_info = normalized_map.get(row_idx, None)
+
+        for k in payload.keys():
+            if not k.startswith("_"):
+                columns_set.add(k)
+
+        possible_fields = [
+            ("Invoice Number", payload.get("invoice_num") or payload.get("invoice_no") or payload.get("invoice_number")),
+            ("Date", payload.get("date") or payload.get("sale_date") or payload.get("expense_date") or payload.get("invoice_date")),
+            ("Customer Name", payload.get("customer_name") or payload.get("customer") or payload.get("client")),
+            ("Supplier/Vendor", payload.get("supplier_name") or payload.get("vendor") or payload.get("supplier") or payload.get("category")),
+            ("Product/Item", payload.get("product_name") or payload.get("product") or payload.get("item")),
+            ("Quantity", payload.get("quantity") or payload.get("qty")),
+            ("Selling Price", payload.get("selling_price") or payload.get("unit_price") or payload.get("price") or payload.get("rate")),
+            ("Purchase Cost", payload.get("unit_cost") or payload.get("purchase_cost") or payload.get("cost")),
+            ("Total Amount", payload.get("total_amount") or payload.get("amount") or payload.get("total") or payload.get("bill_amount"))
+        ]
+
+        field_checklist = []
+        for label, val in possible_fields:
+            if val is not None and str(val).strip() != "":
+                field_checklist.append({"field": label, "value": val, "status": "extracted"})
+            else:
+                field_checklist.append({"field": label, "value": None, "status": "missing"})
+
+        prov_text = f"Source File: {filename} | Source Type: {file_info.get('file_type')} | Row/Page: {row_idx}"
+        if "gmail" in file_info.get("file_type", "").lower() or "gmail" in filename.lower():
+            prov_text = f"Source: Gmail | Attachment: {filename} | Row/Page: {row_idx}"
+
+        extracted_records.append({
+            "id": r_dict["id"],
+            "row_index": row_idx,
+            "source_file": filename,
+            "raw_payload": payload,
+            "detected_domain": r_dict.get("detected_domain", "UNKNOWN"),
+            "field_checklist": field_checklist,
+            "normalized_data": norm_info["data"] if norm_info else None,
+            "normalized_domain": norm_info["domain"] if norm_info else None,
+            "provenance": prov_text
+        })
+
+    return {
+        "file": file_info,
+        "record_count": len(extracted_records),
+        "columns": sorted(list(columns_set)),
+        "records": extracted_records
+    }
+
+
+@app.get("/api/consolidation/source-data")
+def get_all_source_data(
+    file_id: Optional[int] = None,
+    file_type: Optional[str] = None,
+    user: Dict[str, Any] = Depends(get_current_user_dep)
+):
+    """Returns source files and records filtered by file_id or file_type."""
+    if file_id:
+        return get_file_source_data(file_id, user)
+
+    conn = get_db()
+    query = "SELECT * FROM uploaded_files WHERE user_id = ?"
+    params = [user["id"]]
+
+    if file_type and file_type.upper() != "ALL":
+        query += " AND UPPER(file_type) = ?"
+        params.append(file_type.upper())
+
+    query += " ORDER BY id DESC"
+    files = [dict(r) for r in conn.execute(query, params).fetchall()]
+    conn.close()
+
+    return {"files": files}
+
+
+@app.get("/api/consolidation/extracted-expenses")
+def get_extracted_expenses(
+    file_type: Optional[str] = None,
+    user: Dict[str, Any] = Depends(get_current_user_dep)
+):
+    """
+    Returns expense records extracted from uploaded PDF, CSV, Excel business documents.
+    Joins with uploaded_files to provide source file details, file_id, and file_type.
+    """
+    conn = get_db()
+
+    query = """
+        SELECT e.id, e.source_file, e.source_row, e.expense_date, e.category, 
+               e.vendor_name, e.amount, e.description, e.payment_method, e.import_date,
+               f.id as file_id, f.file_type
+        FROM unified_expenses e
+        LEFT JOIN uploaded_files f ON (e.source_file = f.filename AND e.user_id = f.user_id)
+        WHERE e.user_id = ?
+    """
+    params = [user["id"]]
+
+    if file_type and file_type.upper() != "ALL":
+        query += " AND (UPPER(f.file_type) LIKE ? OR UPPER(e.source_file) LIKE ?)"
+        params.extend([f"%{file_type.upper()}%", f"%{file_type.lower()}%"])
+
+    query += " ORDER BY e.id DESC"
+
+    rows = conn.execute(query, params).fetchall()
+
+    expenses_list = []
+    seen_keys = set()
+
+    for r in rows:
+        d = dict(r)
+        key = (d["source_file"], d["source_row"], d["amount"], d["expense_date"])
+        seen_keys.add(key)
+
+        sf_lower = (d["source_file"] or "").lower()
+        ftype = d.get("file_type") or ("PDF" if sf_lower.endswith(".pdf") else "CSV" if sf_lower.endswith(".csv") else "EXCEL" if any(sf_lower.endswith(x) for x in [".xlsx", ".xls"]) else "FILE")
+
+        fid = d.get("file_id")
+        if not fid:
+            f_row = conn.execute("SELECT id FROM uploaded_files WHERE user_id = ? AND filename = ?", (user["id"], d["source_file"])).fetchone()
+            if f_row:
+                fid = f_row[0]
+
+        expenses_list.append({
+            "id": d["id"],
+            "expense_date": d["expense_date"],
+            "description": d["description"] or d["vendor_name"] or "Business Expense",
+            "category": d["category"] or "Operating Expense",
+            "vendor_name": d["vendor_name"] or "",
+            "amount": float(d["amount"]),
+            "source_file": d["source_file"],
+            "file_type": ftype.upper(),
+            "file_id": fid,
+            "source_row": d["source_row"]
+        })
+
+    raw_expense_rows = conn.execute("""
+        SELECT r.id, r.file_id, r.source_file, r.row_index, r.raw_payload_json, r.detected_domain,
+               f.file_type
+        FROM raw_records r
+        JOIN uploaded_files f ON (r.file_id = f.id AND r.user_id = f.user_id)
+        WHERE r.user_id = ? AND (r.detected_domain = 'EXPENSES' OR LOWER(r.source_file) LIKE '%.pdf' OR LOWER(r.source_file) LIKE '%.csv' OR LOWER(r.source_file) LIKE '%.xlsx' OR LOWER(r.source_file) LIKE '%.xls')
+    """, (user["id"],)).fetchall()
+
+    for r in raw_expense_rows:
+        d = dict(r)
+        try:
+            payload = json.loads(d.get("raw_payload_json") or "{}")
+        except Exception:
+            payload = {}
+
+        amount_val = payload.get("amount") or payload.get("total_amount") or payload.get("total") or payload.get("bill_amount")
+        cat_val = payload.get("category") or payload.get("expense_category")
+        vendor_val = payload.get("supplier_name") or payload.get("vendor") or payload.get("supplier")
+        date_val = payload.get("expense_date") or payload.get("date") or payload.get("invoice_date")
+        desc_val = payload.get("description") or payload.get("particulars") or payload.get("item")
+
+        if (d["detected_domain"] == "EXPENSES" or cat_val or vendor_val) and amount_val:
+            try:
+                amt_float = float(str(amount_val).replace(',', '').replace('₹', '').replace('$', '').strip())
+            except Exception:
+                amt_float = 0.0
+
+            if amt_float > 0:
+                key = (d["source_file"], d["row_index"], amt_float, str(date_val or ""))
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    sf_lower = d["source_file"].lower()
+                    ftype = d.get("file_type") or ("PDF" if sf_lower.endswith(".pdf") else "CSV" if sf_lower.endswith(".csv") else "EXCEL" if any(sf_lower.endswith(x) for x in [".xlsx", ".xls"]) else "FILE")
+                    expenses_list.append({
+                        "id": f"raw_{d['id']}",
+                        "expense_date": str(date_val or "N/A"),
+                        "description": desc_val or vendor_val or cat_val or "Extracted Expense",
+                        "category": cat_val or "Operating Expense",
+                        "vendor_name": vendor_val or "",
+                        "amount": amt_float,
+                        "source_file": d["source_file"],
+                        "file_type": ftype.upper(),
+                        "file_id": d["file_id"],
+                        "source_row": d["row_index"]
+                    })
+
+    conn.close()
+
+    total_exp = sum(e["amount"] for e in expenses_list)
+    sources = set(e["source_file"] for e in expenses_list)
+
+    return {
+        "summary": {
+            "total_expenses": round(total_exp, 2),
+            "total_records": len(expenses_list),
+            "total_sources": len(sources)
+        },
+        "expenses": expenses_list
+    }
+
+
 @app.get("/api/consolidation/quality")
 def get_data_quality(user: Dict[str, Any] = Depends(get_current_user_dep)):
     """Returns the latest calculated 6-dimension data quality score."""

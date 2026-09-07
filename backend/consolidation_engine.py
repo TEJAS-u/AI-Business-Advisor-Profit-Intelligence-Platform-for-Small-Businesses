@@ -39,25 +39,43 @@ class ConsolidationEngine:
 
         # 1. Multi-Source Ingestion & Raw Record Logging
         for filename, content in files:
-            raw_recs, domain, meta = self.ingestion_service.ingest_file(
-                filename, content)
+            try:
+                raw_recs, domain, meta = self.ingestion_service.ingest_file(
+                    filename, content)
 
-            # Save uploaded file log
-            cursor.execute("""
-            INSERT INTO uploaded_files (user_id, filename, file_type, file_size, record_count, detected_domain)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """, (self.user_id, filename, meta.get("file_type", "CSV"), meta.get("file_size", 0), len(raw_recs), domain))
-            file_id = cursor.lastrowid
-            meta["file_id"] = file_id
-            files_metadata.append(meta)
+                file_type = meta.get("file_type", "CSV")
+                record_cnt = len(raw_recs)
+                warnings = meta.get("warnings", [])
+                status = "PROCESSED"
+                status_detail = ""
+                if record_cnt == 0:
+                    status = "FAILED"
+                    status_detail = "No readable transaction records or tabular data detected in file."
+                elif warnings:
+                    status = "PARTIAL"
+                    status_detail = "; ".join(warnings)
 
-            # Store raw records for complete lineage
-            for r in raw_recs:
                 cursor.execute("""
-                INSERT INTO raw_records (user_id, file_id, source_file, row_index, raw_payload_json, detected_domain)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """, (self.user_id, file_id, filename, r.get("_row_index", 1), json.dumps(r), domain))
-                all_raw_records.append((r, domain))
+                INSERT INTO uploaded_files (user_id, filename, file_type, file_size, record_count, detected_domain, status, status_detail)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (self.user_id, filename, file_type, meta.get("file_size", len(content)), record_cnt, domain, status, status_detail))
+                file_id = cursor.lastrowid
+                meta["file_id"] = file_id
+                files_metadata.append(meta)
+
+                # Store raw records for complete lineage
+                for r in raw_recs:
+                    cursor.execute("""
+                    INSERT INTO raw_records (user_id, file_id, source_file, row_index, raw_payload_json, detected_domain)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """, (self.user_id, file_id, filename, r.get("_row_index", 1), json.dumps(r), domain))
+                    all_raw_records.append((r, domain))
+            except Exception as exc:
+                file_ext = filename.split('.')[-1].upper() if '.' in filename else 'FILE'
+                cursor.execute("""
+                INSERT INTO uploaded_files (user_id, filename, file_type, file_size, record_count, detected_domain, status, status_detail)
+                VALUES (?, ?, ?, ?, 0, 'UNKNOWN', 'FAILED', ?)
+                """, (self.user_id, filename, file_ext, len(content), f"File processing failed: {str(exc)}"))
 
         conn.commit()
 

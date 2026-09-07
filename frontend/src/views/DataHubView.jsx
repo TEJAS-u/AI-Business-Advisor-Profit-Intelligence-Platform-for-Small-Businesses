@@ -23,7 +23,10 @@ import {
   Check,
   Megaphone,
   HelpCircle,
-  Mail
+  Mail,
+  Eye,
+  Tag,
+  Filter
 } from 'lucide-react';
 import { formatINR } from '../utils/formatters';
 
@@ -36,6 +39,35 @@ export default function DataHubView({ token, onConsolidationCompleted, onNavigat
   const [qualityData, setQualityData] = useState(null);
   const [pendingReviews, setPendingReviews] = useState({ duplicates: 0, entity_matches: 0, conflicts: 0, total_pending: 0 });
   const [dragActive, setDragActive] = useState(false);
+
+  // Source Data Preview Modal & Filter State
+  const [sourceFilter, setSourceFilter] = useState('ALL');
+  const [selectedSourceFileModal, setSelectedSourceFileModal] = useState(null);
+  const [sourceDataDetails, setSourceDataDetails] = useState(null);
+  const [isLoadingSourceData, setIsLoadingSourceData] = useState(false);
+  const [activeModalTab, setActiveModalTab] = useState('extracted');
+
+  // Dedicated Extracted Expenses from PDF / CSV State
+  const [showExtractedExpensesModal, setShowExtractedExpensesModal] = useState(false);
+  const [extractedExpensesData, setExtractedExpensesData] = useState(null);
+  const [isLoadingExpenses, setIsLoadingExpenses] = useState(false);
+  const [expenseFileTypeFilter, setExpenseFileTypeFilter] = useState('ALL');
+  const [expenseSearchQuery, setExpenseSearchQuery] = useState('');
+
+  const fetchExtractedExpenses = async () => {
+    setIsLoadingExpenses(true);
+    try {
+      const res = await fetch('/api/consolidation/extracted-expenses', { headers });
+      if (res.ok) {
+        const data = await res.json();
+        setExtractedExpensesData(data);
+      }
+    } catch (err) {
+      console.error("Error fetching extracted expenses", err);
+    } finally {
+      setIsLoadingExpenses(false);
+    }
+  };
 
   // Zoho Social Integration State
   const [zohoStatus, setZohoStatus] = useState({
@@ -121,6 +153,7 @@ export default function DataHubView({ token, onConsolidationCompleted, onNavigat
       if (qualRes.ok) {
         setQualityData(await qualRes.json());
       }
+      fetchExtractedExpenses();
     } catch (err) {
       console.error(err);
     }
@@ -309,6 +342,36 @@ export default function DataHubView({ token, onConsolidationCompleted, onNavigat
       setIsLoadingGmailReview(false);
     }
   };
+
+  const handleViewSourceData = async (fileId) => {
+    setIsLoadingSourceData(true);
+    setSelectedSourceFileModal(fileId);
+    setSourceDataDetails(null);
+    setActiveModalTab('extracted');
+    try {
+      const res = await fetch(`/api/consolidation/files/${fileId}/source-data`, { headers });
+      if (res.ok) {
+        const data = await res.json();
+        setSourceDataDetails(data);
+      }
+    } catch (err) {
+      console.error("Error fetching source data", err);
+    } finally {
+      setIsLoadingSourceData(false);
+    }
+  };
+
+  const filteredFilesList = uploadedFilesList.filter(f => {
+    if (sourceFilter === 'ALL') return true;
+    const fType = (f.file_type || '').toUpperCase();
+    const fname = (f.filename || '').toLowerCase();
+    if (sourceFilter === 'CSV') return fType.includes('CSV') || fType.includes('TSV') || fname.endsWith('.csv');
+    if (sourceFilter === 'EXCEL') return fType.includes('EXCEL') || fType.includes('XLS') || fname.endsWith('.xlsx') || fname.endsWith('.xls');
+    if (sourceFilter === 'PDF') return fType.includes('PDF') || fname.endsWith('.pdf');
+    if (sourceFilter === 'GMAIL') return fType.includes('GMAIL') || fname.includes('gmail');
+    if (sourceFilter === 'MANUAL') return fType.includes('MANUAL') || fname.includes('manual');
+    return true;
+  });
 
   const handleFileSelect = (e) => {
     if (e.target.files) {
@@ -906,6 +969,262 @@ export default function DataHubView({ token, onConsolidationCompleted, onNavigat
       </div>
 
       {/* ==================================================== */}
+      {/* IMMEDIATE UPLOAD EXTRACTION RESULT CARD */}
+      {/* ==================================================== */}
+      {consolidationResult && consolidationResult.files && consolidationResult.files.length > 0 && (
+        <div className="p-6 rounded-3xl bg-slate-900 border-2 border-emerald-500/50 shadow-2xl space-y-4 animate-in fade-in">
+          <div className="flex items-center justify-between border-b border-slate-800 pb-3 flex-wrap gap-2">
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 rounded-xl bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                <CheckCircle2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="font-black text-white text-base sm:text-lg">
+                  Upload & Extraction Complete
+                </h3>
+                <p className="text-xs text-slate-300">
+                  {consolidationResult.files.length} file(s) ingested • {consolidationResult.summary?.total_records || 0} total records extracted
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => setConsolidationResult(null)}
+              className="text-xs text-slate-400 hover:text-slate-200 font-bold px-2 py-1"
+            >
+              Dismiss
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+            {consolidationResult.files.map((f, idx) => (
+              <div key={idx} className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2.5 text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="font-black text-white text-sm truncate">{f.filename}</span>
+                  <span className="px-2.5 py-0.5 rounded bg-slate-800 text-teal-300 font-extrabold text-[11px] uppercase border border-slate-700">
+                    {f.file_type || 'CSV'}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2 text-slate-300 font-medium">
+                  <div>Source File: <strong className="text-white">{f.filename}</strong></div>
+                  <div>Source Type: <strong className="text-white">{f.file_type || 'CSV'}</strong></div>
+                  <div>Records Extracted: <strong className="text-emerald-400 font-bold">{f.record_count || 0}</strong></div>
+                  <div>Status: <strong className="text-emerald-400 font-bold">Processed</strong></div>
+                </div>
+
+                <div className="pt-2 border-t border-slate-900 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => handleViewSourceData(f.file_id || f.id)}
+                    className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-500 hover:to-emerald-500 text-white font-black text-xs shadow-lg transition-all flex items-center gap-1.5 active:scale-95"
+                  >
+                    <Eye className="w-4 h-4" />
+                    <span>VIEW EXTRACTED DATA</span>
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ==================================================== */}
+      {/* DEDICATED SECTION: EXPENSES FROM PDF / CSV */}
+      {/* ==================================================== */}
+      <div className="glass-panel p-6 sm:p-7 rounded-3xl border-2 border-amber-500/40 bg-gradient-to-br from-slate-900/90 via-slate-900/60 to-amber-950/20 space-y-5 shadow-2xl relative overflow-hidden">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800/80 pb-4">
+          <div className="flex items-center gap-3.5">
+            <div className="p-3 rounded-2xl bg-amber-500/20 text-amber-400 border border-amber-500/40 shadow-lg shadow-amber-950/40">
+              <FileSpreadsheet className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="font-black text-white text-lg sm:text-xl tracking-tight">
+                  EXPENSES FROM PDF / CSV
+                </h3>
+                <span className="px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-extrabold text-xs border border-amber-500/40">
+                  Extracted Document Expenses
+                </span>
+              </div>
+              <p className="text-xs sm:text-sm text-slate-300 font-medium mt-0.5">
+                Expenses extracted from uploaded business documents
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              fetchExtractedExpenses();
+              setShowExtractedExpensesModal(true);
+            }}
+            className="px-5 py-3 rounded-2xl bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-slate-950 font-black text-xs sm:text-sm shadow-xl shadow-amber-950/50 transition-all flex items-center justify-center gap-2 active:scale-95 flex-shrink-0"
+          >
+            <Eye className="w-4 h-4 text-slate-950" />
+            <span>[ EXPENSES FROM PDF / CSV ]</span>
+          </button>
+        </div>
+
+        {/* Quick Expense Highlights Bar */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 pt-1">
+          <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800/80 space-y-1">
+            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Total Expenses Extracted</div>
+            <div className="text-xl font-black text-amber-400">
+              {formatINR(extractedExpensesData?.summary?.total_expenses || 0)}
+            </div>
+          </div>
+          <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800/80 space-y-1">
+            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Extracted Expense Records</div>
+            <div className="text-xl font-black text-white">
+              {extractedExpensesData?.summary?.total_records || 0} Records
+            </div>
+          </div>
+          <div className="p-4 rounded-2xl bg-slate-950/80 border border-slate-800/80 space-y-1">
+            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Extracted Source Files</div>
+            <div className="text-xl font-black text-teal-300">
+              {extractedExpensesData?.summary?.total_sources || 0} Files
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ==================================================== */}
+      {/* SOURCE FILES INGESTED & DATA HUB LOG */}
+      {/* ==================================================== */}
+      <div className="glass-panel p-6 sm:p-7 rounded-3xl border-2 border-slate-800 space-y-5 shadow-xl">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-800 pb-4 gap-3">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 rounded-xl bg-teal-500/20 text-teal-300 border border-teal-500/30">
+              <Database className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="font-black text-white text-base sm:text-lg flex items-center gap-2">
+                <span>Source Files Ingested</span>
+                <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-slate-800 text-teal-300 border border-slate-700">
+                  {uploadedFilesList.length} Files Total
+                </span>
+              </h3>
+              <p className="text-xs text-slate-300 font-medium">
+                View extracted raw records, field confidence status, and raw vs normalized data lineage
+              </p>
+            </div>
+          </div>
+
+          {/* Source Type Filter Tabs */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {['ALL', 'CSV', 'EXCEL', 'PDF', 'GMAIL', 'MANUAL'].map((filterKey) => (
+              <button
+                key={filterKey}
+                onClick={() => setSourceFilter(filterKey)}
+                className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all border ${sourceFilter === filterKey
+                  ? 'bg-teal-600 text-white border-teal-400 shadow-md'
+                  : 'bg-slate-900 text-slate-400 border-slate-800 hover:border-slate-700 hover:text-slate-200'
+                  }`}
+              >
+                {filterKey}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Files List Table/Grid */}
+        {filteredFilesList.length === 0 ? (
+          <div className="py-12 text-center text-slate-400 space-y-2">
+            <FileSpreadsheet className="w-10 h-10 text-slate-600 mx-auto" />
+            <div className="text-base font-bold text-slate-300">No Ingested Source Files Found</div>
+            <p className="text-xs text-slate-400">
+              Upload CSV, Excel, or PDF files above to preview extracted source data.
+            </p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {filteredFilesList.map((file) => {
+              const isPdf = file.file_type?.toUpperCase().includes('PDF');
+              const isExcel = file.file_type?.toUpperCase().includes('EXCEL') || file.file_type?.toUpperCase().includes('XLS');
+              const isGmail = file.file_type?.toUpperCase().includes('GMAIL') || file.filename.toLowerCase().includes('gmail');
+              const isFailed = file.status === 'FAILED';
+              const isPartial = file.status === 'PARTIAL';
+
+              return (
+                <div
+                  key={file.id}
+                  className={`p-4 rounded-2xl bg-slate-900 border-2 transition-all space-y-3 flex flex-col justify-between shadow-md ${isFailed
+                    ? 'border-rose-500/40 hover:border-rose-500'
+                    : isPartial
+                      ? 'border-amber-500/40 hover:border-amber-500'
+                      : 'border-slate-800 hover:border-teal-500/50'
+                    }`}
+                >
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="px-2.5 py-0.5 rounded-md bg-slate-800 text-teal-300 font-extrabold text-[11px] border border-slate-700 uppercase">
+                        {file.file_type || 'CSV'}
+                      </span>
+                      {isFailed ? (
+                        <span className="text-[11px] font-black px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/40 flex items-center gap-1">
+                          <AlertTriangle className="w-3 h-3" />
+                          Failed
+                        </span>
+                      ) : isPartial ? (
+                        <span className="text-[11px] font-black px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 flex items-center gap-1">
+                          <AlertTriangle className="w-3 h-3" />
+                          Partial
+                        </span>
+                      ) : (
+                        <span className="text-[11px] font-black px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 flex items-center gap-1">
+                          <CheckCircle2 className="w-3 h-3" />
+                          Processed
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex items-start gap-2.5">
+                      <div className="p-2 rounded-xl bg-slate-800 text-teal-400 mt-0.5 flex-shrink-0">
+                        {isPdf ? <FileText className="w-5 h-5 text-rose-400" /> : isExcel ? <FileSpreadsheet className="w-5 h-5 text-emerald-400" /> : isGmail ? <Mail className="w-5 h-5 text-amber-400" /> : <FileText className="w-5 h-5 text-teal-400" />}
+                      </div>
+                      <div className="overflow-hidden">
+                        <h4 className="font-extrabold text-white text-sm truncate" title={file.filename}>
+                          {file.filename}
+                        </h4>
+                        <div className="text-[11px] text-slate-400 font-medium">
+                          {file.record_count > 0 ? (
+                            <span className="text-teal-300 font-bold">{file.record_count} {isPdf ? 'invoice records' : 'records extracted'}</span>
+                          ) : (
+                            <span className="text-rose-400 font-bold">0 records extracted</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {file.status_detail && (
+                      <div className="text-[11px] text-slate-400 bg-slate-950 p-2 rounded-lg border border-slate-800/80 font-medium line-clamp-2">
+                        {file.status_detail}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-xs">
+                    <span className="text-[10px] text-slate-400">
+                      {file.uploaded_at ? new Date(file.uploaded_at).toLocaleDateString() : 'Recent'}
+                    </span>
+
+                    <button
+                      type="button"
+                      onClick={() => handleViewSourceData(file.id)}
+                      className="px-3.5 py-1.5 rounded-xl bg-teal-600/90 hover:bg-teal-500 text-white font-extrabold text-xs shadow-md transition-all flex items-center gap-1.5 active:scale-95"
+                    >
+                      <Eye className="w-3.5 h-3.5" />
+                      <span>[ View Source Data ]</span>
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* ==================================================== */}
       {/* GMAIL REVIEW IMPORTED DATA MODAL */}
       {/* ==================================================== */}
       {showGmailReviewModal && (
@@ -1005,6 +1324,641 @@ export default function DataHubView({ token, onConsolidationCompleted, onNavigat
                 Close
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================================================== */}
+      {/* SOURCE DATA PREVIEW MODAL */}
+      {/* ==================================================== */}
+      {selectedSourceFileModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-5 animate-in fade-in">
+          <div className="bg-slate-900 border-2 border-teal-500/40 rounded-3xl p-5 sm:p-7 max-w-4xl w-full max-h-[90vh] flex flex-col shadow-2xl space-y-4">
+
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3.5">
+              <div className="flex items-center gap-3 overflow-hidden">
+                <div className="p-2.5 rounded-xl bg-teal-500/20 text-teal-300 border border-teal-500/30">
+                  <Eye className="w-5 h-5" />
+                </div>
+                <div className="truncate">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="font-black text-white text-lg truncate">
+                      {sourceDataDetails?.file?.filename || 'Source File Preview'}
+                    </h3>
+                    {sourceDataDetails?.file && (
+                      <span className="px-2.5 py-0.5 rounded-md bg-slate-800 text-teal-300 font-extrabold text-xs border border-slate-700 uppercase">
+                        {sourceDataDetails.file.file_type}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-slate-300 font-medium">
+                    Extracted Source Data • {sourceDataDetails?.record_count || 0} Records Extracted
+                  </p>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setSelectedSourceFileModal(null)}
+                className="w-9 h-9 rounded-xl bg-slate-800 hover:bg-rose-500/20 text-slate-400 hover:text-rose-300 font-bold flex items-center justify-center transition-all flex-shrink-0"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Processing Failed Banner if applicable */}
+            {sourceDataDetails?.file?.status === 'FAILED' && (
+              <div className="p-4 rounded-2xl bg-rose-950/50 border-2 border-rose-500/60 text-xs space-y-1.5 text-rose-200">
+                <div className="font-black text-rose-300 text-sm flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-400" />
+                  <span>❌ Processing Failed for {sourceDataDetails.file.filename}</span>
+                </div>
+                <p className="font-semibold">
+                  Reason: {sourceDataDetails.file.status_detail || 'No readable table or transaction records detected.'}
+                </p>
+                <p className="text-[11px] text-slate-300">
+                  Ensure your file contains clear column headers (Date, Product, Quantity, Price, Amount) or structured PDF invoice lines.
+                </p>
+              </div>
+            )}
+
+            {/* Modal Tabs Navigation */}
+            <div className="flex items-center gap-2 border-b border-slate-800 pb-2 overflow-x-auto">
+              <button
+                onClick={() => setActiveModalTab('extracted')}
+                className={`px-3.5 py-2 rounded-xl text-xs font-extrabold transition-all border flex items-center gap-1.5 ${activeModalTab === 'extracted'
+                  ? 'bg-teal-600 text-white border-teal-400 shadow-md'
+                  : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200'
+                  }`}
+              >
+                <FileText className="w-3.5 h-3.5" />
+                <span>Extracted Source Data</span>
+              </button>
+
+              <button
+                onClick={() => setActiveModalTab('comparison')}
+                className={`px-3.5 py-2 rounded-xl text-xs font-extrabold transition-all border flex items-center gap-1.5 ${activeModalTab === 'comparison'
+                  ? 'bg-teal-600 text-white border-teal-400 shadow-md'
+                  : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200'
+                  }`}
+              >
+                <Layers className="w-3.5 h-3.5" />
+                <span>Raw vs Normalized Data</span>
+              </button>
+
+              <button
+                onClick={() => setActiveModalTab('checklist')}
+                className={`px-3.5 py-2 rounded-xl text-xs font-extrabold transition-all border flex items-center gap-1.5 ${activeModalTab === 'checklist'
+                  ? 'bg-teal-600 text-white border-teal-400 shadow-md'
+                  : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200'
+                  }`}
+              >
+                <ShieldCheck className="w-3.5 h-3.5" />
+                <span>Extraction Field Checklist</span>
+              </button>
+
+              <button
+                onClick={() => setActiveModalTab('provenance')}
+                className={`px-3.5 py-2 rounded-xl text-xs font-extrabold transition-all border flex items-center gap-1.5 ${activeModalTab === 'provenance'
+                  ? 'bg-teal-600 text-white border-teal-400 shadow-md'
+                  : 'bg-slate-950 text-slate-400 border-slate-800 hover:text-slate-200'
+                  }`}
+              >
+                <Tag className="w-3.5 h-3.5" />
+                <span>Source Provenance</span>
+              </button>
+            </div>
+
+            {/* Modal Body Content */}
+            <div className="flex-1 overflow-y-auto pr-1 space-y-4">
+              {isLoadingSourceData ? (
+                <div className="py-16 text-center text-slate-400 text-sm font-bold flex flex-col items-center gap-2">
+                  <Sparkles className="w-6 h-6 animate-spin text-teal-400" />
+                  <span>Fetching extracted source data from database...</span>
+                </div>
+              ) : !sourceDataDetails || sourceDataDetails.records.length === 0 ? (
+                <div className="py-12 text-center text-slate-400 space-y-2">
+                  <div className="text-base font-bold text-slate-300">No Extracted Records Present</div>
+                  <p className="text-xs text-slate-400">
+                    The source parser did not extract valid records from this file.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  {/* TAB A: EXTRACTED SOURCE DATA */}
+                  {activeModalTab === 'extracted' && (
+                    <div className="space-y-4">
+                      {/* If PDF, show structured PDF Summary Card */}
+                      {sourceDataDetails.file?.file_type?.toUpperCase().includes('PDF') && (
+                        <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2 text-xs">
+                          <div className="text-xs font-black text-rose-400 uppercase tracking-wider flex items-center justify-between">
+                            <span>Extracted PDF Invoice Summary</span>
+                            <span className="text-slate-400 text-[10px]">Extracted from: {sourceDataDetails.file.filename}</span>
+                          </div>
+
+                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1 font-medium text-slate-300">
+                            <div>
+                              <div className="text-[10px] text-slate-400 uppercase">Invoice Number</div>
+                              <div className="font-bold text-white">{sourceDataDetails.records[0]?.raw_payload?.invoice_num || 'N/A'}</div>
+                            </div>
+                            <div>
+                              <div className="text-[10px] text-slate-400 uppercase">Date</div>
+                              <div className="font-bold text-white">{sourceDataDetails.records[0]?.raw_payload?.date || 'N/A'}</div>
+                            </div>
+                            <div>
+                              <div className="text-[10px] text-slate-400 uppercase">Customer/Party</div>
+                              <div className="font-bold text-teal-300">{sourceDataDetails.records[0]?.raw_payload?.customer_name || 'N/A'}</div>
+                            </div>
+                            <div>
+                              <div className="text-[10px] text-slate-400 uppercase">Supplier/Vendor</div>
+                              <div className="font-bold text-teal-300">{sourceDataDetails.records[0]?.raw_payload?.supplier_name || 'N/A'}</div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Tabular Rows Display */}
+                      <div className="p-3 rounded-2xl bg-slate-950 border border-slate-800 overflow-x-auto space-y-2">
+                        <div className="text-xs font-extrabold text-slate-300 px-1">
+                          Extracted Rows ({sourceDataDetails.records.length}):
+                        </div>
+
+                        <table className="w-full text-left text-xs text-slate-200 border-collapse">
+                          <thead>
+                            <tr className="border-b border-slate-800 bg-slate-900/80 text-teal-300 uppercase text-[10px] font-extrabold">
+                              <th className="py-2.5 px-3">Row</th>
+                              {sourceDataDetails.columns.map((col) => (
+                                <th key={col} className="py-2.5 px-3 capitalize">{col}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800/60 font-medium">
+                            {sourceDataDetails.records.map((rec) => (
+                              <tr key={rec.id} className="hover:bg-slate-900/50 transition-colors">
+                                <td className="py-2 px-3 text-slate-400 font-mono font-bold">{rec.row_index}</td>
+                                {sourceDataDetails.columns.map((col) => (
+                                  <td key={col} className="py-2 px-3 whitespace-nowrap">
+                                    {rec.raw_payload[col] !== undefined && rec.raw_payload[col] !== null
+                                      ? String(rec.raw_payload[col])
+                                      : <span className="text-slate-400 italic text-[10px]">N/A</span>}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* TAB B: RAW VS NORMALIZED COMPARISON */}
+                  {activeModalTab === 'comparison' && (
+                    <div className="space-y-3">
+                      <div className="text-xs font-extrabold text-slate-300">
+                        Raw Source vs Normalized SSOT Comparison:
+                      </div>
+
+                      {sourceDataDetails.records.map((rec) => (
+                        <div key={rec.id} className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-3 text-xs">
+                          <div className="flex items-center justify-between text-xs font-extrabold border-b border-slate-900 pb-2">
+                            <span className="text-teal-400 font-mono">Row #{rec.row_index}</span>
+                            <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 text-[10px] uppercase">
+                              Domain: {rec.detected_domain}
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            {/* A. SOURCE DATA */}
+                            <div className="p-3 rounded-xl bg-slate-900 border border-amber-500/30 space-y-1.5">
+                              <div className="text-[11px] font-black text-amber-400 uppercase tracking-wider">
+                                A. SOURCE DATA (Extracted from file)
+                              </div>
+                              <div className="space-y-1 font-mono text-[11px] text-slate-200">
+                                {Object.entries(rec.raw_payload)
+                                  .filter(([k]) => !k.startsWith('_'))
+                                  .map(([k, v]) => (
+                                    <div key={k} className="flex justify-between border-b border-slate-800/60 pb-0.5">
+                                      <span className="text-slate-400">{k}:</span>
+                                      <span className="font-bold text-amber-200">{String(v)}</span>
+                                    </div>
+                                  ))}
+                              </div>
+                            </div>
+
+                            {/* B. NORMALIZED DATA */}
+                            <div className="p-3 rounded-xl bg-slate-900 border border-emerald-500/30 space-y-1.5">
+                              <div className="text-[11px] font-black text-emerald-400 uppercase tracking-wider">
+                                B. NORMALIZED DATA (Business Analysis SSOT)
+                              </div>
+                              {rec.normalized_data ? (
+                                <div className="space-y-1 font-mono text-[11px] text-slate-200">
+                                  {Object.entries(rec.normalized_data)
+                                    .filter(([k]) => !['id', 'user_id', 'source_file', 'import_date'].includes(k))
+                                    .map(([k, v]) => (
+                                      <div key={k} className="flex justify-between border-b border-slate-800/60 pb-0.5">
+                                        <span className="text-slate-400">{k}:</span>
+                                        <span className="font-bold text-emerald-300">{v !== null && v !== undefined ? String(v) : 'None'}</span>
+                                      </div>
+                                    ))}
+                                </div>
+                              ) : (
+                                <div className="text-slate-400 italic text-[11px] py-4 text-center">
+                                  Not yet normalized into SSOT table.
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* TAB C: EXTRACTION CONFIDENCE CHECKLIST */}
+                  {activeModalTab === 'checklist' && (
+                    <div className="space-y-3">
+                      <div className="text-xs font-extrabold text-slate-300">
+                        Extraction Field Confidence Checklist:
+                      </div>
+
+                      <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-3">
+                        {sourceDataDetails.records.map((rec) => (
+                          <div key={rec.id} className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-2 text-xs">
+                            <div className="font-extrabold text-teal-300 text-xs">
+                              Record #{rec.row_index} Extraction Field Status:
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                              {rec.field_checklist.map((chk, i) => (
+                                <div
+                                  key={i}
+                                  className={`p-2 rounded-lg border font-medium flex items-center justify-between text-xs ${chk.status === 'extracted'
+                                    ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                                    : 'bg-slate-950 border-slate-800 text-slate-400'
+                                    }`}
+                                >
+                                  <div className="flex items-center gap-1.5 truncate">
+                                    {chk.status === 'extracted' ? (
+                                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
+                                    ) : (
+                                      <AlertTriangle className="w-3.5 h-3.5 text-amber-400/80 flex-shrink-0" />
+                                    )}
+                                    <span className="truncate">{chk.field}:</span>
+                                  </div>
+                                  <span className="font-bold text-[11px] truncate ml-1">
+                                    {chk.status === 'extracted' ? String(chk.value) : <span className="text-amber-400/80 text-[10px]">Not detected</span>}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* TAB D: SOURCE PROVENANCE */}
+                  {activeModalTab === 'provenance' && (
+                    <div className="space-y-3">
+                      <div className="text-xs font-extrabold text-slate-300">
+                        Full Data Provenance & Lineage:
+                      </div>
+
+                      <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 space-y-2.5">
+                        {sourceDataDetails.records.map((rec) => (
+                          <div key={rec.id} className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-1 text-xs">
+                            <div className="text-teal-400 font-extrabold text-[11px] uppercase tracking-wider">
+                              Lineage Badge:
+                            </div>
+                            <div className="font-mono font-bold text-white text-xs bg-slate-950 p-2 rounded border border-slate-800">
+                              {rec.provenance}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="pt-3 border-t border-slate-800 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setSelectedSourceFileModal(null)}
+                className="px-5 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white font-extrabold text-xs shadow-md transition-all"
+              >
+                Close Preview
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+      {showGmailReviewModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-slate-900 border-2 border-teal-500/40 rounded-3xl p-6 sm:p-7 max-w-3xl w-full max-h-[85vh] flex flex-col shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-teal-500/20 text-teal-300 border border-teal-500/30">
+                  <Mail className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-black text-white text-lg">Gmail Imported Business Records</h3>
+                  <p className="text-xs text-slate-300">
+                    Consolidated SSOT records fetched from business emails & attachments
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowGmailReviewModal(false)}
+                className="w-8 h-8 rounded-xl bg-slate-800 hover:bg-rose-500/20 text-slate-400 hover:text-rose-300 font-bold flex items-center justify-center transition-all"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto pr-1 space-y-3">
+              {isLoadingGmailReview ? (
+                <div className="py-12 text-center text-slate-400 text-sm font-bold flex flex-col items-center gap-2">
+                  <Sparkles className="w-6 h-6 animate-spin text-teal-400" />
+                  <span>Loading Gmail consolidated records...</span>
+                </div>
+              ) : gmailImportedRecords.length === 0 ? (
+                <div className="py-12 text-center text-slate-400 space-y-2">
+                  <div className="text-base font-bold text-slate-300">No Gmail Records Found</div>
+                  <p className="text-xs text-slate-400">
+                    Click "Sync Emails" on the Business Gmail card to fetch business emails and attachments.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2.5">
+                  <div className="text-xs font-extrabold text-slate-400 flex items-center justify-between">
+                    <span>Imported Records ({gmailImportedRecords.length}):</span>
+                    <span className="text-teal-400">Single Source of Truth Grounded</span>
+                  </div>
+
+                  {gmailImportedRecords.map((rec, idx) => (
+                    <div
+                      key={idx}
+                      className="p-4 rounded-2xl bg-slate-950 border border-slate-800 hover:border-teal-500/40 transition-all space-y-2 text-xs"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`px-2.5 py-0.5 rounded-full text-[11px] font-black border ${rec.type === 'Sale'
+                              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                              : rec.type === 'Expense'
+                                ? 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+                                : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                              }`}
+                          >
+                            {rec.type}
+                          </span>
+                          <span className="font-extrabold text-white text-sm">
+                            {rec.party_name}
+                          </span>
+                        </div>
+                        <span className="font-black text-sm text-teal-300">
+                          {formatINR(rec.amount)}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 text-slate-300 font-medium">
+                        <div>
+                          Item / Category: <strong className="text-slate-100">{rec.item_name}</strong>
+                        </div>
+                        <div>
+                          Date: <strong className="text-slate-100">{rec.date || 'N/A'}</strong>
+                        </div>
+                      </div>
+
+                      <div className="pt-2 border-t border-slate-900 text-[11px] text-slate-400 flex flex-col sm:flex-row sm:items-center justify-between gap-1 bg-slate-900/60 p-2.5 rounded-lg border border-slate-800">
+                        <span className="font-extrabold text-teal-300 uppercase tracking-wider text-[10px]">Where did this come from?</span>
+                        <span className="text-teal-400 font-mono font-bold truncate">{rec.source_lineage}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="pt-3 border-t border-slate-800 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowGmailReviewModal(false)}
+                className="px-5 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white font-extrabold text-xs shadow-md transition-all"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* ==================================================== */}
+      {/* EXPENSES FROM PDF / CSV DEDICATED MODAL */}
+      {/* ==================================================== */}
+      {showExtractedExpensesModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-slate-950/90 backdrop-blur-md overflow-y-auto animate-in fade-in">
+          <div className="w-full max-w-5xl rounded-3xl bg-slate-900 border-2 border-amber-500/50 shadow-2xl overflow-hidden my-auto flex flex-col max-h-[90vh]">
+
+            {/* Modal Header */}
+            <div className="p-5 sm:p-6 bg-gradient-to-r from-slate-900 via-slate-900 to-amber-950/40 border-b border-slate-800 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3.5">
+                <div className="p-3 rounded-2xl bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                  <FileSpreadsheet className="w-6 h-6" />
+                </div>
+                <div>
+                  <h2 className="text-lg sm:text-2xl font-black text-white flex items-center gap-2">
+                    <span>Expenses from PDF / CSV</span>
+                  </h2>
+                  <p className="text-xs sm:text-sm text-amber-200/80 font-medium">
+                    Expenses extracted from uploaded business documents
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowExtractedExpensesModal(false)}
+                className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white font-bold text-sm transition-all"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Modal Content Scroll Area */}
+            <div className="p-5 sm:p-6 overflow-y-auto space-y-6 flex-1">
+
+              {/* SUMMARY AT TOP */}
+              <div className="p-4 sm:p-5 rounded-2xl bg-slate-950 border border-amber-500/30 grid grid-cols-1 sm:grid-cols-3 gap-4 shadow-lg">
+                <div className="space-y-1">
+                  <div className="text-xs text-slate-400 font-bold uppercase tracking-wider">Total Expenses</div>
+                  <div className="text-2xl sm:text-3xl font-black text-amber-400">
+                    {formatINR(extractedExpensesData?.summary?.total_expenses || 0)}
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs text-slate-400 font-bold uppercase tracking-wider">Records Extracted</div>
+                  <div className="text-2xl sm:text-3xl font-black text-white">
+                    {extractedExpensesData?.summary?.total_records || 0}
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <div className="text-xs text-slate-400 font-bold uppercase tracking-wider">Source Files</div>
+                  <div className="text-2xl sm:text-3xl font-black text-teal-300">
+                    {extractedExpensesData?.summary?.total_sources || 0}
+                  </div>
+                </div>
+              </div>
+
+              {/* FILTERS BAR */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-2xl bg-slate-950/70 border border-slate-800">
+                {/* File Type Tabs */}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-xs font-bold text-slate-400 mr-1 flex items-center gap-1">
+                    <Filter className="w-3.5 h-3.5" /> Source Type:
+                  </span>
+                  {['ALL', 'PDF', 'CSV', 'EXCEL'].map((ft) => (
+                    <button
+                      key={ft}
+                      onClick={() => setExpenseFileTypeFilter(ft)}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all border ${expenseFileTypeFilter === ft
+                          ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-md'
+                          : 'bg-slate-900 text-slate-400 border-slate-800 hover:border-slate-700 hover:text-slate-200'
+                        }`}
+                    >
+                      {ft}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Search/Text Filter */}
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    placeholder="Filter by Date, Category, Source, or Description..."
+                    value={expenseSearchQuery}
+                    onChange={(e) => setExpenseSearchQuery(e.target.value)}
+                    className="px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-700 text-white placeholder-slate-500 text-xs focus:outline-none focus:border-amber-500 w-full sm:w-64"
+                  />
+                  {expenseSearchQuery && (
+                    <button
+                      onClick={() => setExpenseSearchQuery('')}
+                      className="text-xs text-slate-400 hover:text-white px-2"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* TABLE DISPLAY */}
+              {isLoadingExpenses ? (
+                <div className="py-16 text-center text-slate-400 space-y-3">
+                  <RefreshCw className="w-8 h-8 text-amber-400 animate-spin mx-auto" />
+                  <div className="text-sm font-bold">Loading expenses extracted from files...</div>
+                </div>
+              ) : !extractedExpensesData || !extractedExpensesData.expenses || extractedExpensesData.expenses.length === 0 ? (
+                <div className="py-16 text-center text-slate-400 space-y-3 bg-slate-950/40 rounded-2xl border border-slate-800">
+                  <FileSpreadsheet className="w-12 h-12 text-slate-600 mx-auto" />
+                  <div className="text-base font-bold text-slate-300">No Expense Records Extracted Yet</div>
+                  <p className="text-xs text-slate-400 max-w-md mx-auto">
+                    Upload a PDF invoice (e.g. electricity.pdf) or CSV/Excel file containing expense lines to extract and view expense data here.
+                  </p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto rounded-2xl border border-slate-800 bg-slate-950">
+                  <table className="w-full text-left text-xs text-slate-300">
+                    <thead className="bg-slate-900 text-slate-400 font-extrabold uppercase tracking-wider text-[11px] border-b border-slate-800">
+                      <tr>
+                        <th className="p-3.5">Date</th>
+                        <th className="p-3.5">Expense / Description</th>
+                        <th className="p-3.5">Category</th>
+                        <th className="p-3.5">Amount</th>
+                        <th className="p-3.5 text-right">Source</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60 font-medium">
+                      {extractedExpensesData.expenses
+                        .filter((exp) => {
+                          if (expenseFileTypeFilter !== 'ALL') {
+                            const ft = (exp.file_type || '').toUpperCase();
+                            const sf = (exp.source_file || '').toLowerCase();
+                            if (expenseFileTypeFilter === 'PDF' && !ft.includes('PDF') && !sf.endsWith('.pdf')) return false;
+                            if (expenseFileTypeFilter === 'CSV' && !ft.includes('CSV') && !sf.endsWith('.csv')) return false;
+                            if (expenseFileTypeFilter === 'EXCEL' && !ft.includes('EXCEL') && !ft.includes('XLS') && !sf.endsWith('.xlsx') && !sf.endsWith('.xls')) return false;
+                          }
+                          if (expenseSearchQuery) {
+                            const q = expenseSearchQuery.toLowerCase();
+                            const matchDate = (exp.expense_date || '').toLowerCase().includes(q);
+                            const matchCat = (exp.category || '').toLowerCase().includes(q);
+                            const matchDesc = (exp.description || '').toLowerCase().includes(q);
+                            const matchVendor = (exp.vendor_name || '').toLowerCase().includes(q);
+                            const matchSource = (exp.source_file || '').toLowerCase().includes(q);
+                            return matchDate || matchCat || matchDesc || matchVendor || matchSource;
+                          }
+                          return true;
+                        })
+                        .map((exp, idx) => (
+                          <tr key={exp.id || idx} className="hover:bg-slate-900/60 transition-colors">
+                            <td className="p-3.5 font-bold text-slate-200 whitespace-nowrap">
+                              {exp.expense_date || 'N/A'}
+                            </td>
+                            <td className="p-3.5 font-semibold text-white">
+                              <div>{exp.description}</div>
+                              {exp.vendor_name && (
+                                <div className="text-[11px] text-slate-400 font-normal">Vendor: {exp.vendor_name}</div>
+                              )}
+                            </td>
+                            <td className="p-3.5">
+                              <span className="px-2.5 py-1 rounded-lg bg-amber-500/10 text-amber-300 font-bold text-[11px] border border-amber-500/20">
+                                {exp.category || 'Operating Expense'}
+                              </span>
+                            </td>
+                            <td className="p-3.5 font-black text-rose-400 text-sm whitespace-nowrap">
+                              {formatINR(exp.amount)}
+                            </td>
+                            <td className="p-3.5 text-right whitespace-nowrap">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (exp.file_id) {
+                                    handleViewSourceData(exp.file_id);
+                                  } else {
+                                    const matchF = uploadedFilesList.find(f => f.filename === exp.source_file);
+                                    if (matchF) handleViewSourceData(matchF.id || matchF.file_id);
+                                  }
+                                }}
+                                className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-teal-600/30 text-teal-300 hover:text-teal-200 font-bold text-[11px] border border-slate-700 hover:border-teal-500/40 transition-all inline-flex items-center gap-1.5"
+                                title="Click to view raw extracted file source data"
+                              >
+                                <FileText className="w-3.5 h-3.5 text-teal-400" />
+                                <span>{exp.source_file}</span>
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 sm:p-5 bg-slate-950 border-t border-slate-800 flex items-center justify-between">
+              <div className="text-xs text-slate-400 font-medium">
+                Source files verified from SQLite Database lineage
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowExtractedExpensesModal(false)}
+                className="px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-black text-xs transition-all"
+              >
+                Close
+              </button>
+            </div>
+
           </div>
         </div>
       )}

@@ -55,10 +55,15 @@ def init_db():
         record_count INTEGER DEFAULT 0,
         detected_domain TEXT DEFAULT 'UNKNOWN',
         status TEXT DEFAULT 'PROCESSED',
+        status_detail TEXT DEFAULT '',
         uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (user_id) REFERENCES users (id)
     )
     """)
+    try:
+        cursor.execute("ALTER TABLE uploaded_files ADD COLUMN status_detail TEXT DEFAULT ''")
+    except Exception:
+        pass
 
     # 3. Import Jobs (Consolidation Pipeline Runs)
     cursor.execute("""
